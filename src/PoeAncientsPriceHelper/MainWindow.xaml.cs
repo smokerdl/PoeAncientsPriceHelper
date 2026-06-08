@@ -27,12 +27,23 @@ public partial class MainWindow : MetroWindow
     public MainWindow()
     {
         InitializeComponent();
+        var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        if (v is not null) VersionLabel.Text = $"v{v.Major}.{v.Minor}.{v.Build}";
         Loaded += OnLoaded;
         SourceInitialized += (_, _) =>
         {
             _hwnd = new WindowInteropHelper(this).Handle;
-            RegisterHotKey(_hwnd, HotkeyId, 0, VK_F4);
-            RegisterHotKey(_hwnd, StartStopHotkeyId, 0, VK_F5);
+            // RegisterHotKey is system-wide and fails (returns false) if another window already owns
+            // the key — e.g. a not-yet-fully-exited previous instance. Capture the result so a failed
+            // F5/F4 isn't a silent mystery; surface it in the window title.
+            bool f4 = RegisterHotKey(_hwnd, HotkeyId, 0, VK_F4);
+            bool f5 = RegisterHotKey(_hwnd, StartStopHotkeyId, 0, VK_F5);
+            if (!f4 || !f5)
+            {
+                var failed = string.Join("+", new[] { f4 ? null : "F4", f5 ? null : "F5" }.Where(s => s is not null));
+                Console.Error.WriteLine($"[Hotkey] RegisterHotKey failed for {failed} (already held by another app/instance)");
+                Title += $"  ⚠ {failed} hotkey unavailable";
+            }
             HwndSource.FromHwnd(_hwnd)!.AddHook(WndProc);
         };
     }

@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json;
 using PoeAncientsPriceHelper;
 
@@ -37,6 +38,18 @@ public class ConfigStoreTests
         Assert.Equal(16, loaded.OverlayXOffset);
         Assert.Equal("#AABBCC", loaded.ReferencePixelColor);
         Assert.Equal("my_prices.json", loaded.CustomPricesPath);
+    }
+
+    [Fact]
+    public void AvailableLeagues_NotDuplicated_OnRoundTrip()
+    {
+        // Newtonsoft's ObjectCreationHandling.Auto appends a deserialized list onto a pre-populated
+        // default, doubling entries. AvailableLeagues is [JsonIgnore]'d to stay code-only and avoid it.
+        using var dir = new TempDir();
+        SaveTo(dir.Path, new AppConfig());
+        var loaded = LoadFrom(dir.Path);
+        Assert.Equal(new AppConfig().AvailableLeagues, loaded.AvailableLeagues);
+        Assert.Equal(loaded.AvailableLeagues.Count, loaded.AvailableLeagues.Distinct().Count());
     }
 
     [Fact]

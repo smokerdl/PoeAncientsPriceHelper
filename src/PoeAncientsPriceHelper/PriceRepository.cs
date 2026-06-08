@@ -87,9 +87,13 @@ internal sealed class PriceRepository : IDisposable
     }
 
     // API shape (exchange/current/overview):
-    //   items[]  → { id, name }              — display name lookup
-    //   lines[]  → { id, primaryValue }      — price in divines (core.primary == "divine")
-    //   core.rates.exalted                   — how many exalted = 1 divine
+    //   items[]   → { id, name }             — display name lookup
+    //   lines[]   → { id, primaryValue }     — price in the league's PRIMARY currency
+    //   core.primary  → "divine" | "exalted" — which currency primaryValue is denominated in
+    //   core.rates    → { exalted, divine, chaos } — how many of each currency equal 1 primary
+    // The primary currency differs by league: Softcore prices in divines, Hardcore prices in
+    // exalted (divine is too valuable there). So derive both divine- and exalted-denominated
+    // values from primaryValue via the rates, rather than assuming primaryValue is divines.
     private static Dictionary<string, PriceEntry> ParseResponse(string json)
     {
         var result = new Dictionary<string, PriceEntry>();
@@ -107,16 +111,22 @@ internal sealed class PriceRepository : IDisposable
                     if (id is not null && name is not null) nameMap[id] = name;
                 }
 
-            // 1 divine = X exalted
-            var exaltedPerDivine = obj["core"]?["rates"]?["exalted"]?.Value<decimal>() ?? 1m;
+            // rates[x] = how many x equal 1 unit of the primary currency. When the primary IS
+            // divine/exalted, its own rate is implicitly 1 (and absent from the rates object).
+            var core = obj["core"];
+            var primary = core?["primary"]?.Value<string>() ?? "divine";
+            var rates = core?["rates"];
+            var divinePerPrimary = primary == "divine" ? 1m : rates?["divine"]?.Value<decimal>() ?? 0m;
+            var exaltedPerPrimary = primary == "exalted" ? 1m : rates?["exalted"]?.Value<decimal>() ?? 1m;
 
             if (obj["lines"] is not JArray lines) return result;
             foreach (var line in lines)
             {
                 var id = line["id"]?.Value<string>();
                 if (id is null || !nameMap.TryGetValue(id, out var name)) continue;
-                var divineValue = line["primaryValue"]?.Value<decimal>() ?? 0m;
-                var exaltedValue = Math.Round(divineValue * exaltedPerDivine, 1);
+                var primaryValue = line["primaryValue"]?.Value<decimal>() ?? 0m;
+                var divineValue = primaryValue * divinePerPrimary;
+                var exaltedValue = Math.Round(primaryValue * exaltedPerPrimary, 1);
                 var key = NormalizeName(name);
                 if (!string.IsNullOrEmpty(key))
                     result[key] = new PriceEntry(divineValue, exaltedValue);

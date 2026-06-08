@@ -1,4 +1,5 @@
 using System.Drawing;
+using Newtonsoft.Json;
 
 namespace PoeAncientsPriceHelper;
 
@@ -6,7 +7,12 @@ internal sealed class AppConfig
 {
     public string LeagueName { get; set; } = "Runes of Aldur";
     // Leagues offered in the settings dropdown. Add more here as new leagues launch.
-    public List<string> AvailableLeagues { get; set; } = ["Runes of Aldur"];
+    // The string is used verbatim as poe.ninja's API league param, so "HC Runes of Aldur" is the
+    // Hardcore variant of "Runes of Aldur". [JsonIgnore]: this is an app-defined constant, not user
+    // data — persisting it makes Newtonsoft APPEND the saved list onto this default on load
+    // (ObjectCreationHandling.Auto), duplicating every entry. Keep it code-only.
+    [JsonIgnore]
+    public List<string> AvailableLeagues { get; set; } = ["Runes of Aldur", "HC Runes of Aldur"];
     public int RegionX { get; set; } = 0;
     public int RegionY { get; set; } = 0;
     public int RegionWidth { get; set; } = 0;

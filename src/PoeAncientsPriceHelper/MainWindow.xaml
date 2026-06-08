@@ -57,6 +57,11 @@
                 Background="#1A3A1A" Foreground="#66FF66" BorderBrush="#337733"
                 Click="StartStopButton_Click"/>
 
+        <TextBlock Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2"
+                   x:Name="VersionLabel"
+                   HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                   Foreground="#666" FontSize="11"/>
+
         <Button Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2"
                 x:Name="DonateButton"
                 Content="☕ Buy me a coffee"

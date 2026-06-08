@@ -13,6 +13,22 @@ internal sealed class FakeHttpMessageHandler(string response) : HttpMessageHandl
         });
 }
 
+// Records every request URI + Referer header so tests can assert how the request was built.
+internal sealed class CapturingFakeHttpHandler(string response) : HttpMessageHandler
+{
+    public List<string> Urls { get; } = [];
+    public List<string?> Referers { get; } = [];
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        Urls.Add(request.RequestUri!.AbsoluteUri);
+        Referers.Add(request.Headers.TryGetValues("Referer", out var v) ? string.Join("", v) : null);
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(response)
+        });
+    }
+}
+
 internal sealed class CountingFakeHttpHandler(byte[] response) : HttpMessageHandler
 {
     public int RequestCount { get; private set; }

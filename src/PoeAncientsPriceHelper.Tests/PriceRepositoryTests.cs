@@ -22,6 +22,22 @@ public class PriceRepositoryTests
         }
         """;
 
+    // Hardcore shape: core.primary == "exalted", so primaryValue is in exalted and rates carries
+    // "divine" (divines per exalted) instead of "exalted".
+    private const string FakeHardcoreResponse = """
+        {
+          "items": [
+            { "id": "orb-of-alchemy", "name": "Orb of Alchemy" },
+            { "id": "divine-orb",     "name": "Divine Orb" }
+          ],
+          "lines": [
+            { "id": "orb-of-alchemy", "primaryValue": 1.13 },
+            { "id": "divine-orb",     "primaryValue": 67.51 }
+          ],
+          "core": { "primary": "exalted", "rates": { "divine": 0.01481, "chaos": 0.2785 } }
+        }
+        """;
+
     private static AppConfig DefaultConfig(string tempDir) => new()
     {
         LeagueName = "Test League",
@@ -40,6 +56,23 @@ public class PriceRepositoryTests
         Assert.True(repo.Prices.ContainsKey("support scattering flame"));
         Assert.Equal(0.5m, repo.Prices["chilling flux"].DivineValue);
         Assert.Equal(40.0m, repo.Prices["chilling flux"].ExaltedValue); // 0.5 * 80
+    }
+
+    [Fact]
+    public async Task ExaltedPrimary_DenominatesInExalted_NotDivine()
+    {
+        using var http = FakeHttp(FakeHardcoreResponse);
+        using var dir = new TempDir();
+        var repo = new PriceRepository(http);
+        await repo.InitialFetchAsync(DefaultConfig(dir.Path));
+
+        // 1.13 exalted → ExaltedValue 1.1, DivineValue 1.13*0.01481 < 1 ⇒ shown with the exalted icon.
+        var alch = repo.Prices["orb of alchemy"];
+        Assert.Equal(1.1m, alch.ExaltedValue);
+        Assert.True(alch.DivineValue < 1m, $"expected <1 divine, got {alch.DivineValue}");
+
+        // Pricey item still resolves to >=1 divine ⇒ shown with the divine icon.
+        Assert.True(repo.Prices["divine orb"].DivineValue >= 0.99m);
     }
 
     [Fact]
@@ -83,6 +116,26 @@ public class PriceRepositoryTests
         var repo = new PriceRepository(http);
         await repo.InitialFetchAsync(config);
         Assert.True(repo.Prices.ContainsKey("chilling flux"));
+    }
+
+    // The league name (e.g. the "HC Runes of Aldur" Hardcore variant) is used verbatim — URL-escaped —
+    // as poe.ninja's API league param, and slugged into the Referer.
+    [Theory]
+    [InlineData("Runes of Aldur", "league=Runes%20of%20Aldur&", "/economy/runesofaldur/")]
+    [InlineData("HC Runes of Aldur", "league=HC%20Runes%20of%20Aldur&", "/economy/hcrunesofaldur/")]
+    public async Task LeagueName_DrivesApiParamAndReferer(string league, string expectedParam, string expectedSlug)
+    {
+        var handler = new CapturingFakeHttpHandler(FakeApiResponse);
+        using var http = new HttpClient(handler);
+        using var dir = new TempDir();
+        var config = DefaultConfig(dir.Path);
+        config.LeagueName = league;
+
+        await new PriceRepository(http).InitialFetchAsync(config);
+
+        Assert.All(handler.Urls, u => Assert.Contains(expectedParam, u));
+        // Referer's trailing segment is the per-type slug; assert only the league-slug segment.
+        Assert.All(handler.Referers, r => Assert.Contains(expectedSlug, r));
     }
 
     [Theory]
