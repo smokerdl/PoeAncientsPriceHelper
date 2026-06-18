@@ -36,5 +36,21 @@
     <PackageReference Include="Tesseract.Data.English" Version="4.0.0" />
   </ItemGroup>
 
+  <!-- ДОБАВЛЕНО: русский языковой пакет Tesseract.
+       Файл tessdata/rus.traineddata должен лежать рядом с этим csproj.
+       CopyToOutputDirectory=PreserveNewest — копируется при каждой сборке если изменился. -->
+  <ItemGroup>
+    <None Include="tessdata\rus.traineddata">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- ДОБАВЛЕНО: JSON база данных русских/английских названий наград.
+       Файл должен лежать рядом с этим csproj. -->
+  <ItemGroup>
+    <None Include="Runeshape_Combinations.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 
 </Project>

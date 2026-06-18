@@ -13,6 +13,9 @@ internal sealed class ScanEngine : IDisposable
     private Dictionary<string, int> _lastPositions = new();
     private string _logPath = "";
 
+    // ДОБАВЛЕНО: переводчик RU→EN, инициализируется при старте цикла
+    private RuTranslator? _ruTranslator;
+
     // Shared with the global hotkey hook (App). The loop owns the detection state, so the hook
     // only sets a "dismissed" latch; the loop reads it and keeps the overlay hidden.
     private static volatile bool _dismissed;
@@ -69,6 +72,14 @@ internal sealed class ScanEngine : IDisposable
             Log($"ERROR tessdata not found at {tessdataDir}");
             return;
         }
+
+        // ДОБАВЛЕНО: инициализация переводчика RU→EN
+        var jsonPath = Path.Combine(AppContext.BaseDirectory, "Runeshape_Combinations.json");
+        _ruTranslator = new RuTranslator(jsonPath, Log);
+        if (_ruTranslator.IsAvailable)
+            Log($"[RU] переводчик активен, JSON база загружена");
+        else
+            Log($"[RU] ВНИМАНИЕ: JSON база не загружена, будет использован EN режим");
 
         Log($"START prices={_prices.ItemCount} icons={_icons.IsAvailable} region={_config.RegionRect}");
 
@@ -192,7 +203,7 @@ internal sealed class ScanEngine : IDisposable
                                 Log($"OCR {ocrRows.Count} rows → " +
                                     string.Join(" | ", reads.Select(r =>
                                         $"raw='{r.OcrText.Trim()}' y={r.CenterY} " +
-                                        $"{(r.HasPrice ? $"HIT→'{r.Name}'" : "MISS")}")));
+                                        $"{(r.HasPrice ? $"HIT→'{r.Name}'" : $"MISS name='{r.Name}'")}")) );
 
                                 // Confirm a real exchange panel only when OCR resolves an actual
                                 // priced item — combat effects / stray windows never do.
@@ -259,14 +270,46 @@ internal sealed class ScanEngine : IDisposable
 
         foreach (var row in ocrRows)
         {
-            if (row.NormalizedName.Contains("runeshape"))
+            // ИЗМЕНЕНО: фильтр заголовка панели — EN и RU версии.
+            // EN: "Runeshape Combinations" → "runeshape"
+            // RU: "Рунотворческие комбинации" → "рунотворческие"
+            if (row.NormalizedName.Contains("runeshape") ||
+                row.NormalizedName.Contains("рунотворческие"))
+            {
+                Log($"[DEBUG] пропуск заголовка панели: '{row.RawText.Trim()}'");
                 continue;
+            }
 
             int stableY = row.CenterY;
             if (_lastPositions.TryGetValue(row.NormalizedName, out int prevY) &&
                 Math.Abs(prevY - row.CenterY) < 5)
                 stableY = prevY;
             newPositions[row.NormalizedName] = stableY;
+
+            // ДОБАВЛЕНО: перевод RU→EN через JSON базу данных.
+            // Если переводчик активен — пытаемся перевести RawText (оригинальный OCR текст).
+            // При успехе effectiveRow содержит нормализованное EN имя и корректный multiplier.
+            // При неудаче — добавляем строку с пометкой "проверь json" и продолжаем.
+            var effectiveRow = row;
+            if (_ruTranslator?.IsAvailable == true)
+            {
+                // DEBUG: показываем сырой OCR текст до перевода
+                Log($"[DEBUG] OCR сырой текст: '{row.RawText.Trim()}' | нормализован: '{row.NormalizedName}'");
+
+                if (_ruTranslator.TryTranslate(row.RawText, out var enName, out var enMult))
+                {
+                    // DEBUG: показываем результат перевода
+                    Log($"[DEBUG] перевод RU→EN: '{row.RawText.Trim()}' → EN='{enName}' ×{enMult}");
+                    effectiveRow = row with { NormalizedName = enName, Multiplier = enMult };
+                }
+                else
+                {
+                    // Совпадение не найдено в JSON — показываем "проверь json" вместо цены
+                    Log($"[DEBUG] НЕТ В JSON: '{row.RawText.Trim()}'");
+                    rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, false, row.Multiplier, "проверь json"));
+                    continue;
+                }
+            }
 
             // Uncut gems (skill / spirit / support) are priced PER LEVEL, and adjacent levels differ
             // several-fold (e.g. spirit gem L18 ≈ 0.027 div vs L19 ≈ 0.143 div). The only things that
@@ -275,14 +318,20 @@ internal sealed class ScanEngine : IDisposable
             // slip on the digit (or skill↔spirit) would otherwise lock a confidently-wrong, multiples-off
             // price. If the type or level can't be read cleanly, the row shows '?' until a clean read
             // arrives — better than guessing a neighbouring level.
-            if (TryResolveGemKey(row.NormalizedName, out var gemKey))
+            if (TryResolveGemKey(effectiveRow.NormalizedName, out var gemKey))
             {
                 if (gemKey is not null && snapshot.TryGetValue(gemKey, out var gemEntry))
+                {
+                    Log($"[DEBUG] самоцвет: ключ='{gemKey}' цена={gemEntry.DivineValue} div");
                     rows.Add(new PriceRow(stableY, row.RawText, gemEntry.DivineValue, gemEntry.ExaltedValue,
-                        true, row.Multiplier, gemKey, true));
+                        true, effectiveRow.Multiplier, gemKey, true));
+                }
                 else
+                {
                     // Recognised as an uncut gem but type+level didn't pin to a known price → '?', never fuzzy.
-                    rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, false, row.Multiplier, row.NormalizedName));
+                    Log($"[DEBUG] самоцвет распознан но цена не найдена: '{effectiveRow.NormalizedName}' ключ='{gemKey ?? "null"}'");
+                    rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, false, effectiveRow.Multiplier, effectiveRow.NormalizedName));
+                }
                 continue;
             }
 
@@ -290,14 +339,16 @@ internal sealed class ScanEngine : IDisposable
             // ExactMatch=true so they lock on the first read like a real priced row.
             //   "5x random currency" (the "5x" is stripped into the multiplier, leaving "random
             //    currency") → Mirror of Kalandra. "unique belt" → Headhunter.
-            if (row.NormalizedName.Contains("random") && row.NormalizedName.Contains("currency"))
+            if (effectiveRow.NormalizedName.Contains("random") && effectiveRow.NormalizedName.Contains("currency"))
             {
-                rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, true, row.Multiplier, "random currency", true, MemeKind.Mirror));
+                Log($"[DEBUG] пасхалка: Mirror of Kalandra (случайная валюта ×{effectiveRow.Multiplier})");
+                rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, true, effectiveRow.Multiplier, "random currency", true, MemeKind.Mirror));
                 continue;
             }
-            if (row.NormalizedName.Contains("unique") && row.NormalizedName.Contains("belt"))
+            if (effectiveRow.NormalizedName.Contains("unique") && effectiveRow.NormalizedName.Contains("belt"))
             {
-                rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, true, row.Multiplier, "unique belt", true, MemeKind.Headhunter));
+                Log($"[DEBUG] пасхалка: Headhunter (уникальный пояс)");
+                rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, true, effectiveRow.Multiplier, "unique belt", true, MemeKind.Headhunter));
                 continue;
             }
 
@@ -306,31 +357,39 @@ internal sealed class ScanEngine : IDisposable
             // key (not the noisy OCR text) is stored as the row Name so the same item locks even
             // when OCR jitters between passes.
             PriceEntry? entry;
-            string matchedKey = row.NormalizedName;
+            string matchedKey = effectiveRow.NormalizedName;
             bool exact = false;
-            if (snapshot.TryGetValue(row.NormalizedName, out entry))
+            if (snapshot.TryGetValue(effectiveRow.NormalizedName, out entry))
             {
                 exact = true;
+                Log($"[DEBUG] poe.ninja ТОЧНОЕ совпадение: '{effectiveRow.NormalizedName}' → {entry.DivineValue} div");
             }
-            else if (row.NormalizedName.Length >= 10 &&
-                     snapshot.Keys.Where(k => k.StartsWith(row.NormalizedName, StringComparison.Ordinal))
+            else if (effectiveRow.NormalizedName.Length >= 10 &&
+                     snapshot.Keys.Where(k => k.StartsWith(effectiveRow.NormalizedName, StringComparison.Ordinal))
                                   .MinBy(k => k.Length) is { } prefixKey)
             {
                 entry = snapshot[prefixKey];
                 matchedKey = prefixKey;
+                Log($"[DEBUG] poe.ninja PREFIX совпадение: '{effectiveRow.NormalizedName}' → ключ='{prefixKey}' → {entry.DivineValue} div");
             }
-            else if (row.NormalizedName.Length >= 6 &&
-                     BestFuzzy(snapshot, row.NormalizedName) is { } fuzzy)
+            else if (effectiveRow.NormalizedName.Length >= 6 &&
+                     BestFuzzy(snapshot, effectiveRow.NormalizedName) is { } fuzzy)
             {
                 entry = snapshot[fuzzy];
                 matchedKey = fuzzy;
+                Log($"[DEBUG] poe.ninja НЕЧЁТКОЕ совпадение: '{effectiveRow.NormalizedName}' → ключ='{fuzzy}' → {entry.DivineValue} div");
+            }
+            else
+            {
+                Log($"[DEBUG] poe.ninja НЕТ СОВПАДЕНИЯ для: '{effectiveRow.NormalizedName}'");
             }
 
             if (entry != null)
-                rows.Add(new PriceRow(stableY, row.RawText, entry.DivineValue, entry.ExaltedValue, true, row.Multiplier, matchedKey, exact));
+                rows.Add(new PriceRow(stableY, row.RawText, entry.DivineValue, entry.ExaltedValue, true, effectiveRow.Multiplier, matchedKey, exact));
             else
-                rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, false, row.Multiplier, row.NormalizedName));
+                rows.Add(new PriceRow(stableY, row.RawText, 0m, 0m, false, effectiveRow.Multiplier, effectiveRow.NormalizedName));
         }
+
         _lastPositions = newPositions;
         return rows;
     }
@@ -363,6 +422,7 @@ internal sealed class ScanEngine : IDisposable
     // number is also present, `key` is the canonical price key with the type and level pinned exactly
     // (no fuzzy) — caller looks it up as-is. When the level can't be read, `key` is null so the caller
     // shows '?' rather than guessing an adjacent level (which can be several-fold off).
+    // NOTE: принимает уже переведённое EN имя — кириллица сюда не попадает.
     internal static bool TryResolveGemKey(string normalizedName, out string? key)
     {
         key = null;

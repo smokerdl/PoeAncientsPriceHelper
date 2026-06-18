@@ -26,8 +26,10 @@ internal sealed class OcrScanner : IDisposable
     // read from App.DebugMode so this engine-level type stays free of UI/app statics.
     public OcrScanner(string tessdataDir, Action<string>? log = null, bool debug = false)
     {
-        _engineCol = new TesseractEngine(tessdataDir, "eng", EngineMode.Default);
-        _engineSparse = new TesseractEngine(tessdataDir, "eng", EngineMode.Default);
+        // ИЗМЕНЕНО: "eng" → "rus" для распознавания кириллицы.
+        // rus.traineddata должен лежать в папке tessdata/ рядом с exe.
+        _engineCol = new TesseractEngine(tessdataDir, "rus", EngineMode.Default);
+        _engineSparse = new TesseractEngine(tessdataDir, "rus", EngineMode.Default);
         _log = log;
         _debug = debug;
     }
@@ -46,8 +48,8 @@ internal sealed class OcrScanner : IDisposable
         int rightCut = (int)(regionBitmap.Width * RightTrimFraction);
         int cropW = Math.Max(1, regionBitmap.Width - leftCut - rightCut);
         using var cropped = CropBitmap(regionBitmap, leftCut, 0, cropW, regionBitmap.Height);
-        using var inverted = Preprocess(cropped);
-        using var upscaled = Upscale(inverted, UpscaleFactor);
+        using var prepared = Preprocess(cropped);
+        using var upscaled = Upscale(prepared, UpscaleFactor);
         byte[] png = ToPng(upscaled);
         int height = regionBitmap.Height;
 
@@ -158,6 +160,8 @@ internal sealed class OcrScanner : IDisposable
     // The list shows a stack quantity as "Nx" before the item name ("1x", "2x", "14x").
     // Capture it so the price can be multiplied by the stack size. Read from the raw
     // normalized string BEFORE StripLeadingNoise removes the marker. Returns 1 when absent.
+    // NOTE: for Russian client the quantity is a trailing "(N)" suffix handled by RuTranslator.
+    // This method remains for potential mixed/fallback cases.
     internal static int ExtractMultiplier(string normalized)
     {
         var m = Regex.Match(normalized, @"(?<![a-z0-9])(\d{1,3})\s*x(?![a-z0-9])");
@@ -170,13 +174,14 @@ internal sealed class OcrScanner : IDisposable
     // quantity marker ("1x", "11x"), then remaining leading non-alpha chars.
     // e.g. "krogin 1x ancient rune of decay"  → "ancient rune of decay"
     // e.g. "e l8 n 1x the greatwolf"          → "the greatwolf"
+    // NOTE: for Russian text this is largely a no-op (no leading "Nx" prefix in RU format).
     internal static string StripLeadingNoise(string normalized)
     {
         var s = Regex.Replace(normalized, @"^(?:\S{1,2}\s+|\S*\d\S*\s+)+", "");
         // If a quantity marker still exists, drop everything before (and including) it
         var qm = Regex.Match(s, @"(?<!\w)\d+\s*x\s+");
         if (qm.Success) s = s.Substring(qm.Index + qm.Length);
-        s = Regex.Replace(s, @"^[^a-z]+", "");
+        s = Regex.Replace(s, @"^[^a-z\p{L}]+", "");
         return s.Trim();
     }
 
@@ -191,14 +196,16 @@ internal sealed class OcrScanner : IDisposable
         return false;
     }
 
-    // Invert: PoE list panel has light text on dark background.
-    // Tesseract works better with dark-on-light.
+    // ИЗМЕНЕНО: инверсия убрана.
+    // Оригинальный комментарий говорил "light text on dark background", но панель
+    // Рунотворческих комбинаций имеет ТЁМНЫЙ текст на СВЕТЛОМ пергаментном фоне.
+    // Tesseract работает лучше с тёмным текстом на светлом фоне — инверсия мешала.
     private static Bitmap Preprocess(Bitmap src)
     {
         var dst = new Bitmap(src.Width, src.Height, PixelFormat.Format24bppRgb);
         using var g = Graphics.FromImage(dst);
         g.DrawImage(src, 0, 0);
-        InvertBitmap(dst);
+        // InvertBitmap(dst); // убрано: пергаментная панель — тёмный текст на светлом фоне
         return dst;
     }
 
